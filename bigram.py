@@ -13,6 +13,7 @@ import torch.nn.functional as F
 device = "cuda" if torch.cuda.is_available() else "cpu"
 batch_size = 32
 block_size = 8
+global vocab_size
 
 torch.manual_seed(1337)
 
@@ -41,7 +42,7 @@ def get_batch(data):
 
 
 class Bigram(nn.Module):
-    def __init__(self, vocab_size):
+    def __init__(self):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, vocab_size)
 
@@ -96,6 +97,7 @@ if __name__ == "__main__":
     # get text
     text = get_text()
     chars = sorted(list(set(text)))
+    global vocab_size
     vocab_size = len(chars)
 
     # Character encoding and decoding
@@ -109,7 +111,7 @@ if __name__ == "__main__":
     n = int(0.9 * len(data))  # 90% train, 10% val, no shuffle
     train_data, val_data = data[:n], data[n:]
 
-    model = Bigram(vocab_size).to(device)
+    model = Bigram().to(device)
     model.train(train_data, val_data, epochs=10000)
 
     ctx = torch.zeros((1, 1), dtype=torch.long, device=device)
