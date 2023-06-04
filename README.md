@@ -1,10 +1,10 @@
 ## Running Locally
 
-1. Clone the repository: `git clone git@github.com:e-cal/low-level-nn.git`
+1. Clone the repository: `git clone git@github.com:e-cal/nn-from-scratch.git`
 2. (Optional) Create a virtual environment
    ```bash
-   venv "$VIRTUALENV_HOME/llnn"
-   source "$VIRTUALENV_HOME/llnn/bin/activate"
+   venv "$VIRTUALENV_HOME/ENVNAME"
+   source "$VIRTUALENV_HOME/ENVNAME/bin/activate"
    ```
    See the next section for creating a notebook kernel in the virtual environment.
 3. Install the requirements: `pip install -r requirements.txt`
