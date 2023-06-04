@@ -4,17 +4,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ==============================================================================
-#                                   Data Loader
-# ==============================================================================
+n_iters = 5000
+lr = 3e-4
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
 batch_size = 32
-block_size = 8
-n_emb = 32
-global vocab_size
+block_size = 128
+n_emb = 384
+n_head = 6
+n_blocks = 6
+dropout = 0.2
 
+out_tokens = 500
+
+
+global vocab_size
 torch.manual_seed(1337)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+if device == "cpu" and (n_blocks > 3 or block_size > 64):
+    print("WARNING: this is gonna take a while...")
 
 
 def get_text():
@@ -46,6 +54,7 @@ class SelfAttentionHead(nn.Module):
         self.key = nn.Linear(n_emb, head_size, bias=False)
         self.query = nn.Linear(n_emb, head_size, bias=False)
         self.value = nn.Linear(n_emb, head_size, bias=False)
+        self.dropout = nn.Dropout(dropout)
         # not a model parameter
         self.register_buffer("mask", torch.tril(torch.ones(block_size, block_size)))
 
@@ -59,6 +68,7 @@ class SelfAttentionHead(nn.Module):
         w = q @ k.transpose(-2, -1) * (C**-0.5)  # (B,T,C)⋅(B,C,T) -> (B,T,T)
         w = w.masked_fill(self.mask[:T, :T] == 0, float("-inf"))  # (B,T,T)
         w = F.softmax(w, dim=-1)  # (B,T,T)
+        w = self.dropout(w)  # (B,T,T)
 
         # perform weighted aggregation of the values
         out = w @ v  # (B,T,T)⋅(B,T,C) -> (B,T,C)
@@ -70,10 +80,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([SelfAttentionHead(head_size)] * num_heads)
         self.proj = nn.Linear(n_emb, n_emb)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.proj(out)
+        out = self.dropout(self.proj(out))
         return out
 
 
@@ -84,6 +95,7 @@ class FeedForward(nn.Module):
             nn.Linear(n_emb, 4 * n_emb),
             nn.ReLU(),
             nn.Linear(4 * n_emb, n_emb),  # projection back to residual pathway
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
@@ -112,44 +124,13 @@ class Block(nn.Module):
         return x
 
 
-"""
-class LayerNorm(nn.Module):
-    def __init__(self, n_emb, eps=1e-5) -> None:
-        super().__init__()
-        self.eps = eps
-        self.gamma = nn.Parameter(torch.ones(n_emb))
-        self.beta = nn.Parameter(torch.zeros(n_emb))
-
-    def forward(self, x):
-        xmean = x.mean(1, keepdim=True)  # layer mean
-        xvar = x.var(1, keepdim=True)  # layer variance
-        xhat = (x - xmean) / (xvar + self.eps).sqrt()  # normalize
-        out = self.gamma * xhat + self.beta  # scale and shift
-        return out
-"""
-
-
-class Bigram(nn.Module):
+class Transformer(nn.Module):
     def __init__(self):
         super().__init__()
-
         self.token_embedding = nn.Embedding(vocab_size, n_emb)
         self.pos_embedding = nn.Embedding(block_size, n_emb)
-
-        """
-        # self.self_attn_head = SelfAttentionHead(n_emb)
-        # instead of a single 32 channel head, 4 heads of 8-dimensional self-attention
-        self.self_attn_heads = MultiHeadAttention(4, n_emb // 4)
-
-        self.ff = FeedForward(n_emb)
-        """
-
-        self.blocks = nn.Sequential(
-            Block(n_emb, n_head=4),
-            Block(n_emb, n_head=4),
-            Block(n_emb, n_head=4),
-            nn.LayerNorm(n_emb),
-        )
+        self.blocks = nn.Sequential(*[Block(n_emb, n_head=n_head)] * n_blocks)
+        self.ln = nn.LayerNorm(n_emb)
         self.lm_head = nn.Linear(n_emb, vocab_size)
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
@@ -157,9 +138,8 @@ class Bigram(nn.Module):
         tok_emb = self.token_embedding(idx)  # (B,T,C)
         pos_emb = self.pos_embedding(torch.arange(T, device=device))  # (T,C)
         x = tok_emb + pos_emb  # (B,T,C)
-        # x = self.self_attn_heads(x)  # (B,T,C)
-        # x = self.ff(x)  # (B,T,C)
         x = self.blocks(x)  # (B,T,C)
+        x = self.ln(x)  # (B,T,C)
         logits = self.lm_head(x)  # (B,T,vocab_size)
 
         loss = None
@@ -188,10 +168,10 @@ class Bigram(nn.Module):
 
         return idx
 
-    def train(self, train_data, val_data, epochs=10, lr=0.001):
+    def train(self, train_data, val_data, iters=n_iters, lr=0.001):
         optimizer = torch.optim.AdamW(self.parameters(), lr=lr)
-        eval_interval = epochs // 10
-        for epoch in range(epochs):
+        eval_interval = iters // 10
+        for epoch in range(iters):
             optimizer.zero_grad(set_to_none=True)
             x, y = get_batch(train_data)
             _, loss = self(x, y)
@@ -223,7 +203,7 @@ if __name__ == "__main__":
     chars = sorted(list(set(text)))
     vocab_size = len(chars)
 
-    # Character encoding and decoding
+    # character encoding and decoding
     stoi = {ch: i for i, ch in enumerate(chars)}
     encode = lambda x: [stoi[ch] for ch in x]
     itos = {i: ch for i, ch in enumerate(chars)}
@@ -234,8 +214,8 @@ if __name__ == "__main__":
     n = int(0.9 * len(data))  # 90% train, 10% val, no shuffle
     train_data, val_data = data[:n], data[n:]
 
-    model = Bigram().to(device)
-    model.train(train_data, val_data, epochs=5000, lr=1e-3)
+    model = Transformer().to(device)
+    model.train(train_data, val_data, iters=n_iters, lr=lr)
 
     ctx = torch.zeros((1, 1), dtype=torch.long, device=device)
-    print(decode(model.generate(ctx, max_tokens=500)[0].tolist()))
+    print(decode(model.generate(ctx, max_tokens=out_tokens)[0].tolist()))
